@@ -1,0 +1,15 @@
+# OS / editor junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+
+# Local scratch
+*.tmp
+*.bak
+*.elf
+*.o
+*.obj
+/tmp/

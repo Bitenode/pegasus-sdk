@@ -1,0 +1,24 @@
+# Pegasus C++ SDK archive lock file.
+#
+# Records the SHA-256 of the cross-built C++ runtime archives installed into the
+# SDK sysroot, so a rebuild or a downloaded prebuilt SDK tarball can be verified
+# against a known-good hash.
+#
+# Format (one entry per line):
+#     <sha256>  <path-relative-to-sysroot-root>
+# e.g.
+#     3b1f...c9  lib/libstdc++.a
+#
+# This file is POPULATED AUTOMATICALLY by `make libstdcxx` on a provisioned host
+# (one with the x86_64-elf cross toolchain). Until then it intentionally holds
+# only these comments and NO hashes — the archives cannot be produced on a host
+# without the cross toolchain, so no hashes are fabricated here.
+#
+# Verify an installed sysroot against this lock with:
+#     make verify-cxx-sdk                       # checks ./pegasus-sdk
+#     make verify-cxx-sdk CROSS_SYSROOT=<dir>   # checks another sysroot
+#
+# `make sdk-cxx` asserts the archives exist (presence check); `make sdk-dist`
+# regenerates a self-consistent lock inside the packaged tarball so a consumer's
+# `make verify-cxx-sdk` on the untarred SDK passes.
+# Do NOT edit the hash lines by hand; re-run `make libstdcxx` to regenerate.

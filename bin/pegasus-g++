@@ -1,0 +1,243 @@
+#!/bin/sh
+# =============================================================================
+# pegasus-g++ — turnkey C++ compile+link wrapper for the Pegasus OS SDK.
+# =============================================================================
+#
+# Compiles and links a C++ program against an installed Pegasus SDK sysroot in
+# ONE invocation, producing a static freestanding ELF linked at 0x400000 (via
+# the sysroot's pegasus.ld). It encodes the error-prone freestanding flags and
+# the two libstdc++ link models so consumers never hand-assemble them.
+#
+# This script is installed into the SDK as <sysroot>/bin/pegasus-g++ by
+# `make sdk-install` / `make sdk-cxx`; it derives every path RELATIVE to its own
+# location, so the SDK is fully relocatable (untar it anywhere and run it).
+#
+# -----------------------------------------------------------------------------
+# Usage
+# -----------------------------------------------------------------------------
+#   pegasus-g++ [--eh | --no-eh] [-o OUT.elf] SRC.cpp [SRC2.cpp ...] \
+#               [extra compiler flags: -I... -D... -O... ...]
+#
+#   --eh        full-EH model: -fexceptions -frtti, real libsupc++ + libgcc_eh
+#               unwinder, drops the abort-based eh_stub (DEFAULT).
+#   --no-eh     no-EH model:   -fno-exceptions -fno-rtti, links the abort-based
+#               eh_stub (throwing paths abort()).
+#   -o OUT      output ELF (default: <first-source-basename>.elf).
+#   --print-cmds  echo the compile/link commands as they run.
+#   --help      this help.
+#
+# The mode may also be selected via the environment: PEGASUS_EH=1 (full-EH,
+# default) or PEGASUS_EH=0 (no-EH). An explicit --eh/--no-eh flag wins.
+#
+# -----------------------------------------------------------------------------
+# Overridable environment
+# -----------------------------------------------------------------------------
+#   PEGASUS_CXX   cross C++ compiler used for the compile step (default
+#                 x86_64-elf-g++).
+#   PEGASUS_LD    linker used for the link step (default x86_64-elf-ld).
+#   PEGASUS_SYSROOT  override the auto-derived sysroot (normally the parent of
+#                 the directory holding this script).
+#   PEGASUS_EH    default EH mode when no --eh/--no-eh flag is given (1|0).
+# =============================================================================
+set -eu
+
+prog=$0
+
+usage() {
+    # Print the leading comment header (everything after the shebang, up to the
+    # first non-comment line), with the leading "# " stripped.
+    awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$prog"
+    exit "${1:-0}"
+}
+
+# ---------------------------------------------------------------------------
+# Resolve the SDK sysroot = parent of the directory holding this script.
+# Follow a single level of symlink so `ln -s .../bin/pegasus-g++ ~/bin/` works.
+# ---------------------------------------------------------------------------
+self=$prog
+if [ -L "$self" ]; then
+    link=$(readlink "$self")
+    case "$link" in
+        /*) self=$link ;;
+        *)  self=$(dirname -- "$self")/$link ;;
+    esac
+fi
+bindir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+
+if [ -n "${PEGASUS_SYSROOT:-}" ]; then
+    SYSROOT=$(CDPATH= cd -- "$PEGASUS_SYSROOT" && pwd)
+else
+    SYSROOT=$(CDPATH= cd -- "$bindir/.." && pwd)
+fi
+
+CXX=${PEGASUS_CXX:-x86_64-elf-g++}
+LD=${PEGASUS_LD:-x86_64-elf-ld}
+
+INCDIR="$SYSROOT/include"
+LIBDIR="$SYSROOT/lib"
+LDSCRIPT="$LIBDIR/pegasus.ld"
+RTDIR="$LIBDIR/pegasus-cxx-runtime"
+
+# ---------------------------------------------------------------------------
+# Parse arguments.
+# ---------------------------------------------------------------------------
+EH=${PEGASUS_EH:-1}
+OUT=""
+PRINT_CMDS=0
+SOURCES=""
+OBJS_IN=""
+EXTRA=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --eh)        EH=1 ;;
+        --no-eh)     EH=0 ;;
+        --print-cmds) PRINT_CMDS=1 ;;
+        -h|--help)   usage 0 ;;
+        -o)          shift; [ $# -gt 0 ] || { echo "pegasus-g++: -o needs an argument" >&2; exit 2; }; OUT=$1 ;;
+        -o*)         OUT=${1#-o} ;;
+        *.cpp|*.cc|*.cxx|*.C|*.c++)  SOURCES="$SOURCES $1" ;;
+        *.o|*.a)     OBJS_IN="$OBJS_IN $1" ;;
+        *)           EXTRA="$EXTRA $1" ;;
+    esac
+    shift
+done
+
+if [ -z "$SOURCES$OBJS_IN" ]; then
+    echo "pegasus-g++: no input source (.cpp) given" >&2
+    usage 2
+fi
+
+# ---------------------------------------------------------------------------
+# Validate the sysroot has what we need.
+# ---------------------------------------------------------------------------
+[ -f "$LDSCRIPT" ] || { echo "pegasus-g++: $LDSCRIPT missing — is '$SYSROOT' a Pegasus SDK sysroot?" >&2; exit 1; }
+if [ ! -f "$LIBDIR/libstdc++.a" ]; then
+    echo "pegasus-g++: $LIBDIR/libstdc++.a not found." >&2
+    echo "  This SDK has no C++ STL. Build/repack a C++ SDK with:" >&2
+    echo "      make libstdcxx        # cross-build libstdc++ into the sysroot" >&2
+    echo "      make sdk-cxx          # assemble + assert the STL archives" >&2
+    exit 1
+fi
+command -v "$CXX" >/dev/null 2>&1 || { echo "pegasus-g++: cross compiler '$CXX' not found on PATH (set PEGASUS_CXX=...)" >&2; exit 1; }
+command -v "$LD"  >/dev/null 2>&1 || { echo "pegasus-g++: linker '$LD' not found on PATH (set PEGASUS_LD=...)" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Locate the libstdc++ header tree: include/c++/<ver>[/<target>].
+# ---------------------------------------------------------------------------
+CXXINC=""
+CXXINC_T=""
+for d in "$INCDIR"/c++/*/; do
+    [ -d "$d" ] || continue
+    CXXINC=${d%/}
+    for t in "$CXXINC"/*/; do
+        [ -d "$t" ] || continue
+        if [ -f "${t%/}/bits/c++config.h" ] || [ -f "${t%/}/bits/os_defines.h" ]; then
+            CXXINC_T=${t%/}
+            break
+        fi
+    done
+    break
+done
+[ -n "$CXXINC" ] || { echo "pegasus-g++: no include/c++/<ver> header tree in '$INCDIR'" >&2; exit 1; }
+
+INCFLAGS="-I $CXXINC"
+[ -n "$CXXINC_T" ] && INCFLAGS="$INCFLAGS -I $CXXINC_T"
+INCFLAGS="$INCFLAGS -I $INCDIR"
+
+# ---------------------------------------------------------------------------
+# Flag sets. Mirrors STL_CXXFLAGS / EXC_CXXFLAGS in the root Makefile: hosted
+# compile (NO -ffreestanding, so the hosted libstdc++ headers work), fully
+# freestanding link (-nostdlib + pegasus.ld).
+# ---------------------------------------------------------------------------
+CXXBASE="-g -O2 -pipe -Wall -Wextra -std=gnu++17 -nostdinc \
+-fno-stack-protector -fno-stack-check -fno-PIC -static \
+-m64 -march=x86-64 -mabi=sysv -mno-red-zone -mcmodel=small"
+
+if [ "$EH" = "1" ]; then
+    MODEFLAGS="-fexceptions -frtti"
+else
+    MODEFLAGS="-fno-exceptions -fno-rtti"
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve the libgcc / libgcc_eh archives. Our cross GCC is --disable-shared,
+# so the DWARF unwinder normally lives inside libgcc.a; use a split libgcc_eh.a
+# only when the SDK actually shipped one.
+# ---------------------------------------------------------------------------
+LIBGCC="$LIBDIR/libgcc.a"
+[ -f "$LIBGCC" ] || LIBGCC=""
+if [ -f "$LIBDIR/libgcc_eh.a" ]; then
+    LIBGCC_EH="$LIBDIR/libgcc_eh.a"
+else
+    LIBGCC_EH="$LIBGCC"
+fi
+
+# ---------------------------------------------------------------------------
+# Temp objects.
+# ---------------------------------------------------------------------------
+TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/pegasus-gxx.XXXXXX")
+trap 'rm -rf "$TMPDIR"' EXIT INT TERM
+
+run() {
+    [ "$PRINT_CMDS" = "1" ] && { printf '+'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'; }
+    "$@"
+}
+
+# Determine the output name if not given.
+if [ -z "$OUT" ]; then
+    first=$(printf '%s\n' $SOURCES $OBJS_IN | sed -n '1p')
+    base=$(basename "$first")
+    OUT="${base%.*}.elf"
+fi
+
+# Compile the user's sources.
+OBJS=""
+for src in $SOURCES; do
+    obj="$TMPDIR/$(basename "$src").o"
+    # shellcheck disable=SC2086
+    run "$CXX" $CXXBASE $MODEFLAGS $INCFLAGS $EXTRA -c "$src" -o "$obj"
+    OBJS="$OBJS $obj"
+done
+OBJS="$OBJS $OBJS_IN"
+
+# Compile the Pegasus C++ runtime shipped in the SDK (operator new/delete, and
+# the abort-based EH stub for the no-EH model). Sources live in the SDK so the
+# objects match the consumer's exact compiler/flags.
+[ -f "$RTDIR/new_delete.cpp" ] || { echo "pegasus-g++: $RTDIR/new_delete.cpp missing from SDK" >&2; exit 1; }
+run "$CXX" $CXXBASE $MODEFLAGS -I "$INCDIR" -c "$RTDIR/new_delete.cpp" -o "$TMPDIR/new_delete.o"
+RT_OBJS="$TMPDIR/new_delete.o"
+
+if [ "$EH" = "0" ]; then
+    [ -f "$RTDIR/eh_stub.cpp" ] || { echo "pegasus-g++: $RTDIR/eh_stub.cpp missing from SDK" >&2; exit 1; }
+    run "$CXX" $CXXBASE $MODEFLAGS -I "$INCDIR" -c "$RTDIR/eh_stub.cpp" -o "$TMPDIR/eh_stub.o"
+    RT_OBJS="$RT_OBJS $TMPDIR/eh_stub.o"
+fi
+
+# ---------------------------------------------------------------------------
+# Link. Two models, mirroring the root Makefile recipes exactly.
+# ---------------------------------------------------------------------------
+LDBASE="-nostdlib -static -m elf_x86_64 -T $LDSCRIPT"
+
+if [ "$EH" = "1" ]; then
+    # Full-EH: drop eh_stub, wrap the runtime archives in --start-group because
+    # exceptions introduce circular refs (libsupc++ <-> libgcc_eh <-> libc).
+    # shellcheck disable=SC2086
+    run "$LD" $LDBASE \
+        $OBJS $RT_OBJS \
+        --start-group \
+        "$LIBDIR/libstdc++.a" "$LIBDIR/libsupc++.a" \
+        "$LIBDIR/libpthread.a" "$LIBDIR/libc.a" "$LIBDIR/libm.a" "$LIBDIR/libcompiler_rt.a" \
+        $LIBGCC_EH $LIBGCC \
+        --end-group -o "$OUT"
+else
+    # No-EH: eh_stub supplies abort-based __cxa_*; no group needed.
+    # shellcheck disable=SC2086
+    run "$LD" $LDBASE \
+        $OBJS $RT_OBJS \
+        "$LIBDIR/libstdc++.a" "$LIBDIR/libsupc++.a" \
+        "$LIBDIR/libc.a" "$LIBDIR/libm.a" "$LIBDIR/libcompiler_rt.a" \
+        $LIBGCC -o "$OUT"
+fi
+
+echo "pegasus-g++: wrote $OUT ($([ "$EH" = 1 ] && echo full-EH || echo no-EH) model, linked at base 0x400000)"
