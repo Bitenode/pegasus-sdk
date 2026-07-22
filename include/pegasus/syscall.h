@@ -42,8 +42,13 @@
 #define SYS_GETCWD            34
 #define SYS_RMDIR             35
 #define SYS_FUTEX             36
+#define SYS_SIGACTION         37
+#define SYS_SIGRETURN         38
+#define SYS_SIGPROCMASK       39
+#define SYS_SHM_CREATE        40
+#define SYS_SHM_MAP           41
 
-#define SYSCALL_MAX       37
+#define SYSCALL_MAX       42
 
 long syscall0(uint64_t num);
 long syscall1(uint64_t num, uint64_t a0);

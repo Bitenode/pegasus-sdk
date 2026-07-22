@@ -34,7 +34,8 @@ int spawn(const char *path, char *const argv[]);
 void *sbrk(ptrdiff_t increment);
 int usleep(unsigned long ticks);
 int waitpid(int pid, int *status);
-int kill(int pid);
+/* POSIX kill: send signal `sig` to process `pid` (sig 0 = existence check). */
+int kill(int pid, int sig);
 int thread_create(void (*entry)(void), void *stack_top);
 void thread_exit(int code) __attribute__((noreturn));
 
