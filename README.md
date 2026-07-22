@@ -13,10 +13,10 @@ pegasus-sdk/
 ├── bin/
 │   └── pegasus-g++          # Compile + link C++ against this sysroot in one step
 ├── include/
-│   ├── *.h                  # POSIX-ish C library headers (stdio, unistd, pthread, …)
+│   ├── *.h                  # POSIX-ish C library headers (stdio, unistd, signal, pthread, …)
 │   ├── sys/                 # sys/stat, sys/types, sys/time, …
 │   ├── pegasus/             # OS-specific API
-│   │   ├── syscall.h        # Syscall numbers + wrappers
+│   │   ├── syscall.h        # Syscall numbers + raw syscallN() wrappers
 │   │   ├── socket.h         # Minimal TCP client sockets
 │   │   └── capability.h     # Process capability bitmasks
 │   └── c++/14.2.0/          # GNU libstdc++ headers (C++17 STL)
@@ -45,6 +45,8 @@ pegasus-sdk/
 | **`pegasus.ld`** | Static non-PIE layout at `0x400000` with page-aligned RX / RO / RW segments (matches kernel W^X) |
 | **Rust target** | `x86_64-unknown-pegasus` JSON for `#![no_std]` / custom-target crates |
 | **Capabilities** | Kernel capability bits (`CAP_FS_READ`, `CAP_NET_CONNECT`, …) exposed via `pegasus/capability.h` |
+| **Signals** | POSIX signal delivery via `<signal.h>` (`sigaction`, `sigprocmask`, `raise`, …) backed by `SYS_SIGACTION` / `SYS_SIGRETURN` / `SYS_SIGPROCMASK` |
+| **Shared memory** | Named segments via `SYS_SHM_CREATE` / `SYS_SHM_MAP` (syscall numbers in `syscall.h`; no libc wrapper yet — call `syscall2`/`syscall1` directly) |
 
 ## Target model
 
@@ -110,15 +112,28 @@ rustc --target /path/to/pegasus-sdk/share/x86_64-unknown-pegasus.json ...
 
 ## Syscall surface (snapshot)
 
-`include/pegasus/syscall.h` exposes the current ABI, including process/FS/IO (`exit`, `read`/`write`, `open`/`close`, `mmap`, `execve`, …), threads (`thread_create`, `futex`, …), and networking (`socket`, `connect`, `send`, `recv`). Numbers are generated from the OS `abi/syscalls.json` — treat this header as the source of truth for a given SDK revision.
+`include/pegasus/syscall.h` exposes the current ABI (**42 syscalls**, `SYSCALL_MAX` = 42), generated from the OS `abi/syscalls.json`. Treat this header as the source of truth for a given SDK revision.
+
+| Area | Syscalls / libc |
+|------|-----------------|
+| Process & FS | `exit`, `read`/`write`, `open`/`close`, `mmap`/`munmap`, `execve`, `stat`, `getdents`, `unlink`/`mkdir`/`rmdir`/`rename`, `pipe`, `dup2`, `chdir`/`getcwd`, … |
+| Threads & sync | `thread_create`/`thread_exit`, `gettid`, `futex_wait`/`futex_wake` (`SYS_FUTEX`) |
+| Signals | `sigaction`/`signal`, `sigprocmask`, `kill` — see `<signal.h>` |
+| Networking | `socket`, `connect`, `send`, `recv` |
+| Shared memory | `SYS_SHM_CREATE(name, size)`, `SYS_SHM_MAP(id)` — raw syscalls only for now |
+
+Full ABI notes (errno convention, futex ops, signal delivery) live in the main Pegasus OS tree: `docs/ABI.md`.
 
 ## Status
 
 | Area | Status |
 |------|--------|
 | C libc + core headers | Usable for userspace ports |
+| POSIX signals (`<signal.h>`) | Included — `sigaction`, `sigprocmask`, `raise`, … |
+| Futex + pthread subset | Included — backs `libpthread.a` and libstdc++ threading |
 | GNU libstdc++ / `pegasus-g++` | Included in this tree |
 | Rust target JSON | Included |
+| Shared-memory syscalls | Numbers + raw `syscallN()` only (no libc wrapper yet) |
 | Stable ABI / versioning | **Not frozen** — expect changes as Pegasus OS evolves |
 
 This repository publishes the **assembled sysroot**. The sources that *build* it (kernel ABI generator, libc, cross-toolchain scripts) live in the main Pegasus OS tree.
