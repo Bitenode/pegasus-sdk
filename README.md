@@ -1,143 +1,142 @@
 # Pegasus SDK
 
-**Pegasus SDK** is the userspace sysroot for **Pegasus OS** — an upcoming hobby operating system for **x86_64**.
+**Pegasus SDK** is the userspace sysroot for **Pegasus OS** — a hobby operating
+system for **x86_64**.
 
-It is a relocatable cross-compile kit: headers, static libraries, a linker script, a Rust target spec, and a turnkey `pegasus-g++` wrapper so you can build freestanding C and C++ programs that run on Pegasus without pulling in a host libc.
+It is a relocatable cross-compile kit: headers, static libraries, linker script,
+compile drivers, examples, and documentation so you can build freestanding C
+and C++ programs (including windowed GUI apps) without a host libc.
 
-> Pegasus OS is under active development. This SDK tracks the current userspace ABI (syscalls, capabilities, and static ELF layout). APIs may still change before a stable release.
+> Pegasus OS is under active development. This SDK tracks the current userspace
+> ABI. APIs may still change before a stable release.
 
 ## What's in the box
 
 ```
 pegasus-sdk/
 ├── bin/
-│   └── pegasus-g++          # Compile + link C++ against this sysroot in one step
+│   ├── pegasus-cc           # freestanding C compile+link wrapper
+│   └── pegasus-g++          # freestanding C++ wrapper (when STL is bundled)
+├── docs/
+│   ├── README.md            # this file (also at sysroot root)
+│   ├── GUI_SDK.md           # windowed apps (libgui) + gui_hello example
+│   └── ABI.md               # syscall + capability reference
+├── examples/
+│   └── gui_hello.c          # basic windowed app (same as in-tree gui_hello)
 ├── include/
-│   ├── *.h                  # POSIX-ish C library headers (stdio, unistd, signal, pthread, …)
-│   ├── sys/                 # sys/stat, sys/types, sys/time, …
+│   ├── *.h                  # POSIX-ish C library headers
+│   ├── sys/                 # sys/stat, sys/types, sys/shm, …
 │   ├── pegasus/             # OS-specific API
-│   │   ├── syscall.h        # Syscall numbers + raw syscallN() wrappers
-│   │   ├── socket.h         # Minimal TCP client sockets
-│   │   └── capability.h     # Process capability bitmasks
-│   └── c++/14.2.0/          # GNU libstdc++ headers (C++17 STL)
+│   │   ├── syscall.h        # syscall numbers + raw syscallN() wrappers
+│   │   ├── socket.h         # minimal TCP client
+│   │   ├── capability.h     # process capability bitmasks
+│   │   ├── window.h         # libgui window API
+│   │   ├── gui_event.h      # input events
+│   │   ├── blit.h, font.h   # ARGB + bitmap font helpers
+│   └── c++/14.2.0/          # GNU libstdc++ headers (when bundled)
 ├── lib/
-│   ├── libc.a               # Pegasus C library
-│   ├── libm.a               # Math
-│   ├── libpthread.a         # Threads (backed by Pegasus syscalls)
-│   ├── libcompiler_rt.a     # Compiler builtins
-│   ├── libgcc.a             # GCC runtime / unwinder support
-│   ├── libstdc++.a          # Full GNU libstdc++ (STL, iostream, filesystem, …)
-│   ├── libsupc++.a          # C++ language support (exceptions, RTTI, …)
-│   ├── pegasus.ld           # Linker script (static ELF, base 0x400000, W^X-friendly)
-│   └── pegasus-cxx-runtime/ # operator new/delete + optional no-EH stub
+│   ├── libc.a, libm.a, libpthread.a, libgui.a, libcompiler_rt.a
+│   ├── libstdc++.a, libsupc++.a, libgcc*.a  (optional C++ bundle)
+│   ├── pegasus.ld           # linker script (base 0x400000)
+│   └── pegasus-cxx-runtime/
 ├── share/
 │   └── x86_64-unknown-pegasus.json   # Rust custom target spec
-└── cpp-sdk.lock             # Optional SHA-256 lock for C++ archive integrity
+└── cpp-sdk.lock             # optional SHA-256 lock for C++ archives
 ```
 
-### Highlights
-
-| Piece | Role |
-|-------|------|
-| **C libc** | Freestanding, newlib-style static libc tailored to Pegasus syscalls |
-| **C++ STL** | Cross-built GNU **libstdc++ 14.2.0** (`std::vector`, `std::string`, exceptions, threads, `<iostream>`, `std::filesystem`, …) |
-| **`pegasus-g++`** | One-shot wrapper: encodes freestanding flags, includes, and the full-EH / no-EH link models |
-| **`pegasus.ld`** | Static non-PIE layout at `0x400000` with page-aligned RX / RO / RW segments (matches kernel W^X) |
-| **Rust target** | `x86_64-unknown-pegasus` JSON for `#![no_std]` / custom-target crates |
-| **Capabilities** | Kernel capability bits (`CAP_FS_READ`, `CAP_NET_CONNECT`, …) exposed via `pegasus/capability.h` |
-| **Signals** | POSIX signal delivery via `<signal.h>` (`sigaction`, `sigprocmask`, `raise`, …) backed by `SYS_SIGACTION` / `SYS_SIGRETURN` / `SYS_SIGPROCMASK` |
-| **Shared memory** | Named segments via `SYS_SHM_CREATE` / `SYS_SHM_MAP` (syscall numbers in `syscall.h`; no libc wrapper yet — call `syscall2`/`syscall1` directly) |
-
-## Target model
-
-- **Arch:** x86_64 (SysV ABI, small code model, no red zone)
-- **Link:** static only (`-static -nostdlib`)
-- **Entry:** `_start` via `pegasus.ld`
-- **OS triple (Rust):** `x86_64-unknown-pegasus`
-- **C/C++ toolchain:** typically `x86_64-elf-gcc` / `x86_64-elf-g++` with this directory as `--sysroot`
-
-Programs are freestanding userspace ELFs loaded by the Pegasus kernel — not Linux or Windows binaries.
-
-## Quick start (C++)
-
-Requires an `x86_64-elf` cross GCC/binutils on your `PATH` (or set `PEGASUS_CXX` / `PEGASUS_LD`).
+## Quick start (C — console)
 
 ```sh
-# Untar or clone this repo somewhere, then:
 export PATH="/path/to/pegasus-sdk/bin:$PATH"
 
-cat > hello.cpp <<'EOF'
-#include <iostream>
-int main() {
-    std::cout << "hello from pegasus\n";
+cat > hello.c <<'EOF'
+#include <stdio.h>
+int main(void) {
+    puts("Hello from Pegasus!");
     return 0;
 }
 EOF
 
-pegasus-g++ -o hello.elf hello.cpp
-# -> static ELF linked at 0x400000
+pegasus-cc -o hello.elf hello.c
 ```
 
-Useful flags:
+## Quick start (C — windowed GUI)
 
-- `--eh` / `--no-eh` — full exceptions+RTTI (default) vs abort-on-throw stub
-- `--print-cmds` — show the exact compile/link lines
-- `PEGASUS_SYSROOT` — override the auto-detected SDK root
-
-## Quick start (C)
-
-Point your cross compiler at this sysroot:
+The reference app is **gui_hello** (full walkthrough in
+[docs/GUI_SDK.md](GUI_SDK.md)). It must be launched on Pegasus with the
+**GUI spawn profile** (Start → **GUI Hello**, or Terminal `spawn gui`).
 
 ```sh
-x86_64-elf-gcc -nostdinc -isystem /path/to/pegasus-sdk/include \
-  -c hello.c -o hello.o
-
-x86_64-elf-ld -nostdlib -static -m elf_x86_64 \
-  -T /path/to/pegasus-sdk/lib/pegasus.ld \
-  hello.o \
-  /path/to/pegasus-sdk/lib/libc.a \
-  /path/to/pegasus-sdk/lib/libm.a \
-  /path/to/pegasus-sdk/lib/libcompiler_rt.a \
-  -o hello.elf
+export PATH="/path/to/pegasus-sdk/bin:$PATH"
+pegasus-cc -o gui_hello.elf examples/gui_hello.c -lgui
 ```
+
+That source draws centered text, redraws on maximize/resize, and quits on
+window close, Escape, or `q`. See [GUI_SDK.md](GUI_SDK.md) for the complete
+listing and API tables.
+
+## Quick start (C++)
+
+Requires `x86_64-elf-g++` on `PATH` (or `PEGASUS_CXX` / `PEGASUS_LD`).
+
+```sh
+pegasus-g++ -o hello.elf hello.cpp
+```
+
+Flags: `--eh` / `--no-eh`, `--print-cmds`, `PEGASUS_SYSROOT`.
 
 ## Quick start (Rust)
 
-Use the bundled target spec:
-
 ```sh
 rustc --target /path/to/pegasus-sdk/share/x86_64-unknown-pegasus.json ...
-# Link against lib/libc.a (and friends) as needed for your crate
 ```
 
-## Syscall surface (snapshot)
+Link against `lib/libc.a` (and friends) as needed.
 
-`include/pegasus/syscall.h` exposes the current ABI (**42 syscalls**, `SYSCALL_MAX` = 42), generated from the OS `abi/syscalls.json`. Treat this header as the source of truth for a given SDK revision.
+## Target model
 
-| Area | Syscalls / libc |
-|------|-----------------|
-| Process & FS | `exit`, `read`/`write`, `open`/`close`, `mmap`/`munmap`, `execve`, `stat`, `getdents`, `unlink`/`mkdir`/`rmdir`/`rename`, `pipe`, `dup2`, `chdir`/`getcwd`, … |
-| Threads & sync | `thread_create`/`thread_exit`, `gettid`, `futex_wait`/`futex_wake` (`SYS_FUTEX`) |
-| Signals | `sigaction`/`signal`, `sigprocmask`, `kill` — see `<signal.h>` |
-| Networking | `socket`, `connect`, `send`, `recv` |
-| Shared memory | `SYS_SHM_CREATE(name, size)`, `SYS_SHM_MAP(id)` — raw syscalls only for now |
+| Item | Value |
+|------|-------|
+| Arch | x86_64 SysV, small code model, no red zone |
+| Link | static only (`-static -nostdlib`) |
+| Entry | `_start` via `pegasus.ld` at `0x400000` |
+| Toolchain | `x86_64-elf-gcc` / `clang` + `ld.lld` |
+| Hosts | Linux, macOS, WSL (no native Windows toolchain in-tree) |
 
-Full ABI notes (errno convention, futex ops, signal delivery) live in the main Pegasus OS tree: `docs/ABI.md`.
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [docs/GUI_SDK.md](GUI_SDK.md) | libgui API, **gui_hello** example, events, GUI spawn |
+| [docs/ABI.md](ABI.md) | syscall table, capabilities, profiles |
+| `include/pegasus/syscall.h` | authoritative syscall numbers |
+| `examples/gui_hello.c` | copy-paste starting point for windowed apps |
+
+## Highlights
+
+| Piece | Role |
+|-------|------|
+| **libc** | freestanding static C library (stdio, unistd, signals, pthread subset, …) |
+| **libgui** | windowed apps via SHM surfaces + `WINDOW_*` syscalls |
+| **libstdc++** | optional GNU STL 14.2 (`pegasus-g++`) |
+| **pegasus-cc / pegasus-g++** | one-shot compile+link drivers |
+| **Capabilities** | kernel-enforced access (`CAP_FS_*`, `CAP_NET_*`, `CAP_DISPLAY`, …) |
 
 ## Status
 
 | Area | Status |
 |------|--------|
-| C libc + core headers | Usable for userspace ports |
-| POSIX signals (`<signal.h>`) | Included — `sigaction`, `sigprocmask`, `raise`, … |
-| Futex + pthread subset | Included — backs `libpthread.a` and libstdc++ threading |
-| GNU libstdc++ / `pegasus-g++` | Included in this tree |
-| Rust target JSON | Included |
-| Shared-memory syscalls | Numbers + raw `syscallN()` only (no libc wrapper yet) |
-| Stable ABI / versioning | **Not frozen** — expect changes as Pegasus OS evolves |
+| C libc + coreutils-style ports | usable |
+| GUI / libgui | usable (GUI spawn required on target; see gui_hello) |
+| C++ STL / pegasus-g++ | bundled when cross-built |
+| Rust target JSON | included |
+| Stable ABI | **not frozen** |
 
-This repository publishes the **assembled sysroot**. The sources that *build* it (kernel ABI generator, libc, cross-toolchain scripts) live in the main Pegasus OS tree.
+Sources that build this sysroot live in the main Pegasus OS tree
+(`userspace/`, `abi/syscalls.json`, cross-toolchain scripts).
 
-## License
+Rebuild/install from the OS tree:
 
-Licensing for Pegasus OS and redistributed components (GNU libstdc++, compiler-rt, etc.) will be clarified alongside the OS release. Third-party archives retain their upstream licenses (GPL/LGPL/Apache/etc. as applicable).
+```sh
+make sdk-install SDK_DESTDIR=/path/to/pegasus-sdk
+```

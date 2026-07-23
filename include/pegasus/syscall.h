@@ -47,8 +47,14 @@
 #define SYS_SIGPROCMASK       39
 #define SYS_SHM_CREATE        40
 #define SYS_SHM_MAP           41
+#define SYS_WINDOW_CREATE     42
+#define SYS_WINDOW_DESTROY    43
+#define SYS_WINDOW_SET_TITLE  44
+#define SYS_WINDOW_SET_GEOM   45
+#define SYS_WINDOW_PRESENT    46
+#define SYS_WINDOW_POLL_EVENT 47
 
-#define SYSCALL_MAX       42
+#define SYSCALL_MAX       48
 
 long syscall0(uint64_t num);
 long syscall1(uint64_t num, uint64_t a0);

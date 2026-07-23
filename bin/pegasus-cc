@@ -1,0 +1,165 @@
+#!/bin/sh
+# =============================================================================
+# pegasus-cc — turnkey C compile+link wrapper for the Pegasus OS SDK.
+# =============================================================================
+#
+# Compiles and links a freestanding C program against an installed Pegasus SDK
+# sysroot in ONE invocation, producing a static ELF linked at 0x400000 (via
+# the sysroot's pegasus.ld). Sibling of bin/pegasus-g++ for C++.
+#
+# Installed into the SDK as <sysroot>/bin/pegasus-cc by `make sdk-install`.
+# Paths are derived relative to this script, so the SDK is relocatable.
+#
+# -----------------------------------------------------------------------------
+# Usage
+# -----------------------------------------------------------------------------
+#   pegasus-cc [-o OUT.elf] SRC.c [SRC2.c ...] [extra flags: -I... -D... -lgui ...]
+#
+#   -o OUT        output ELF (default: <first-source-basename>.elf).
+#   --print-cmds  echo the compile/link commands as they run.
+#   --help        this help.
+#
+# Link order is always: objects, then any -l archives you pass (e.g. -lgui),
+# then libc.a + libcompiler_rt.a. Pass -lgui for windowed apps.
+#
+# -----------------------------------------------------------------------------
+# Overridable environment
+# -----------------------------------------------------------------------------
+#   PEGASUS_CC       cross C compiler (default: x86_64-elf-gcc, else clang).
+#   PEGASUS_LD       linker (default: x86_64-elf-ld, else ld.lld).
+#   PEGASUS_SYSROOT  override auto-derived sysroot (parent of bin/).
+# =============================================================================
+set -eu
+
+prog=$0
+
+usage() {
+    awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$prog"
+    exit "${1:-0}"
+}
+
+self=$prog
+if [ -L "$self" ]; then
+    link=$(readlink "$self")
+    case "$link" in
+        /*) self=$link ;;
+        *)  self=$(dirname -- "$self")/$link ;;
+    esac
+fi
+bindir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
+
+if [ -n "${PEGASUS_SYSROOT:-}" ]; then
+    SYSROOT=$(CDPATH= cd -- "$PEGASUS_SYSROOT" && pwd)
+else
+    SYSROOT=$(CDPATH= cd -- "$bindir/.." && pwd)
+fi
+
+# Prefer a cross GCC when present; fall back to clang (same as the Makefiles).
+if [ -n "${PEGASUS_CC:-}" ]; then
+    CC=$PEGASUS_CC
+elif command -v x86_64-elf-gcc >/dev/null 2>&1; then
+    CC=x86_64-elf-gcc
+else
+    CC=clang
+fi
+
+if [ -n "${PEGASUS_LD:-}" ]; then
+    LD=$PEGASUS_LD
+elif command -v x86_64-elf-ld >/dev/null 2>&1; then
+    LD=x86_64-elf-ld
+else
+    LD=ld.lld
+fi
+
+INCDIR="$SYSROOT/include"
+LIBDIR="$SYSROOT/lib"
+LDSCRIPT="$LIBDIR/pegasus.ld"
+
+OUT=""
+PRINT_CMDS=0
+SOURCES=""
+OBJS_IN=""
+EXTRA=""
+LIBS=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --print-cmds) PRINT_CMDS=1 ;;
+        -h|--help)   usage 0 ;;
+        -o)          shift; [ $# -gt 0 ] || { echo "pegasus-cc: -o needs an argument" >&2; exit 2; }; OUT=$1 ;;
+        -o*)         OUT=${1#-o} ;;
+        *.c)         SOURCES="$SOURCES $1" ;;
+        *.o|*.a)     OBJS_IN="$OBJS_IN $1" ;;
+        -l*)         LIBS="$LIBS $1" ;;
+        *)           EXTRA="$EXTRA $1" ;;
+    esac
+    shift
+done
+
+if [ -z "$SOURCES$OBJS_IN" ]; then
+    echo "pegasus-cc: no input source (.c) given" >&2
+    usage 2
+fi
+
+[ -f "$LDSCRIPT" ] || { echo "pegasus-cc: $LDSCRIPT missing — is '$SYSROOT' a Pegasus SDK sysroot?" >&2; exit 1; }
+[ -f "$LIBDIR/libc.a" ] || { echo "pegasus-cc: $LIBDIR/libc.a missing" >&2; exit 1; }
+[ -f "$LIBDIR/libcompiler_rt.a" ] || { echo "pegasus-cc: $LIBDIR/libcompiler_rt.a missing" >&2; exit 1; }
+command -v "$CC" >/dev/null 2>&1 || { echo "pegasus-cc: compiler '$CC' not found on PATH (set PEGASUS_CC=...)" >&2; exit 1; }
+command -v "$LD"  >/dev/null 2>&1 || { echo "pegasus-cc: linker '$LD' not found on PATH (set PEGASUS_LD=...)" >&2; exit 1; }
+
+CFLAGS="-g -O2 -pipe -Wall -Wextra -std=gnu11 -nostdinc -ffreestanding \
+-fno-stack-protector -fno-stack-check -fno-PIC -static \
+-m64 -march=x86-64 -mabi=sysv -mno-red-zone -mcmodel=small"
+
+case "$CC" in
+    *clang*) CFLAGS="$CFLAGS --target=x86_64-unknown-none" ;;
+esac
+
+TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/pegasus-cc.XXXXXX")
+trap 'rm -rf "$TMPDIR"' EXIT INT TERM
+
+run() {
+    [ "$PRINT_CMDS" = "1" ] && { printf '+'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'; }
+    "$@"
+}
+
+if [ -z "$OUT" ]; then
+    first=$(printf '%s\n' $SOURCES $OBJS_IN | sed -n '1p')
+    base=$(basename "$first")
+    OUT="${base%.*}.elf"
+fi
+
+# Collect object/archive paths one-per-line so sysroots with spaces stay intact
+# under POSIX sh (paths themselves must not contain newlines).
+: >"$TMPDIR/link.list"
+for src in $SOURCES; do
+    obj="$TMPDIR/$(basename "$src").o"
+    # shellcheck disable=SC2086
+    run "$CC" $CFLAGS -I "$INCDIR" $EXTRA -c "$src" -o "$obj"
+    printf '%s\n' "$obj" >>"$TMPDIR/link.list"
+done
+for o in $OBJS_IN; do
+    printf '%s\n' "$o" >>"$TMPDIR/link.list"
+done
+
+# Resolve -lNAME against the sysroot (e.g. -lgui -> $LIBDIR/libgui.a).
+for l in $LIBS; do
+    name=${l#-l}
+    if [ -f "$LIBDIR/lib${name}.a" ]; then
+        printf '%s\n' "$LIBDIR/lib${name}.a" >>"$TMPDIR/link.list"
+    else
+        echo "pegasus-cc: warning: lib${name}.a not found in $LIBDIR" >&2
+    fi
+done
+printf '%s\n' "$LIBDIR/libc.a" >>"$TMPDIR/link.list"
+printf '%s\n' "$LIBDIR/libcompiler_rt.a" >>"$TMPDIR/link.list"
+
+set --
+while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    set -- "$@" "$item"
+done <"$TMPDIR/link.list"
+
+run "$LD" -nostdlib -static -m elf_x86_64 -T "$LDSCRIPT" "$@" -o "$OUT"
+
+echo "pegasus-cc: wrote $OUT (linked at base 0x400000)"
