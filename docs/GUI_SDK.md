@@ -26,7 +26,7 @@ Escape is ASCII `27` (`PG_KEY_ESCAPE`); the kernel also synthesizes
 | Spawn path | Profile | Extra caps |
 |------------|---------|------------|
 | CLI (`execve` / `spawn` from `psh`) | `PROFILE_MINIMAL` | FS + net only — **no** `CAP_DISPLAY` |
-| GUI (start-menu **GUI Hello**, Terminal `spawn gui`, `proc_spawn_gui_path`) | `PROFILE_GUI` | `CAP_DISPLAY` + `CAP_INPUT` |
+| GUI (Terminal `spawn gui`, installed Start pin, `proc_spawn_gui_path`) | `PROFILE_GUI` | `CAP_DISPLAY` + `CAP_INPUT` |
 
 `PROFILE_GUI` is `PROFILE_MINIMAL` plus `SYS_SHM_*` and `SYS_WINDOW_*`.
 Without `CAP_DISPLAY`, every `WINDOW_*` call returns `-EPERM`.
@@ -58,11 +58,19 @@ make gui_hello
 Copy the ELF to the guest (e.g. seed `/bin/gui_hello` via `make disk`) and
 launch with a **GUI spawn** path:
 
-- Start menu → **GUI Hello**
 - Terminal: `spawn gui` / `spawn gui_hello` / `spawn /bin/gui_hello`
+- Or package + install a `.pap` (Start pin / Desktop shortcut) — see
+  [APP_PACKAGES.md](APP_PACKAGES.md)
 
 A plain `psh` `spawn` without the GUI profile will get `-EPERM` on
 `WINDOW_CREATE`.
+
+### Ship as an installable package
+
+Wrap the ELF in a `Something.pap/` folder with a `manifest` (`kind=gui`,
+`binary=…`, optional `icon=`). Install from **Settings → Apps** or Terminal
+`install`. Details, icon defaults, and Start → **Add to desktop** are in
+[APP_PACKAGES.md](APP_PACKAGES.md).
 
 ### Source
 
@@ -202,3 +210,6 @@ Raw syscalls are also available via `pegasus/syscall.h` (`SYS_WINDOW_*` 42–47)
 
 Link order: your objects, then `-lgui`, then `libc.a` + `libcompiler_rt.a`
 (`pegasus-cc` handles this automatically).
+
+There is no userspace API yet to set a custom taskbar/window icon at runtime;
+use the package `icon=` field (or the shell’s letter-tile default).

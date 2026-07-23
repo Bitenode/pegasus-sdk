@@ -20,6 +20,7 @@ pegasus-sdk/
 ├── docs/
 │   ├── README.md            # this file (also at sysroot root)
 │   ├── GUI_SDK.md           # windowed apps (libgui) + gui_hello example
+│   ├── APP_PACKAGES.md      # .pap install packages, icons, Start/Desktop
 │   └── ABI.md               # syscall + capability reference
 ├── examples/
 │   └── gui_hello.c          # basic windowed app (same as in-tree gui_hello)
@@ -64,7 +65,8 @@ pegasus-cc -o hello.elf hello.c
 
 The reference app is **gui_hello** (full walkthrough in
 [docs/GUI_SDK.md](GUI_SDK.md)). It must be launched on Pegasus with the
-**GUI spawn profile** (Start → **GUI Hello**, or Terminal `spawn gui`).
+**GUI spawn profile** (Terminal `spawn gui`, or install the demo `.pap` and
+use Start → **Sample GUI**).
 
 ```sh
 export PATH="/path/to/pegasus-sdk/bin:$PATH"
@@ -74,6 +76,10 @@ pegasus-cc -o gui_hello.elf examples/gui_hello.c -lgui
 That source draws centered text, redraws on maximize/resize, and quits on
 window close, Escape, or `q`. See [GUI_SDK.md](GUI_SDK.md) for the complete
 listing and API tables.
+
+To ship your own app on the guest (Start menu pin, optional icon, install /
+uninstall), wrap the ELF in a `.pap` folder — see
+[docs/APP_PACKAGES.md](APP_PACKAGES.md).
 
 ## Quick start (C++)
 
@@ -108,6 +114,7 @@ Link against `lib/libc.a` (and friends) as needed.
 | Doc | Contents |
 |-----|----------|
 | [docs/GUI_SDK.md](GUI_SDK.md) | libgui API, **gui_hello** example, events, GUI spawn |
+| [docs/APP_PACKAGES.md](APP_PACKAGES.md) | `.pap` packages, `icon=`, Settings/Terminal install |
 | [docs/ABI.md](ABI.md) | syscall table, capabilities, profiles |
 | `include/pegasus/syscall.h` | authoritative syscall numbers |
 | `examples/gui_hello.c` | copy-paste starting point for windowed apps |
@@ -128,6 +135,7 @@ Link against `lib/libc.a` (and friends) as needed.
 |------|--------|
 | C libc + coreutils-style ports | usable |
 | GUI / libgui | usable (GUI spawn required on target; see gui_hello) |
+| App packages (`.pap`) | usable on guest (Settings → Apps / `install`); see APP_PACKAGES.md |
 | C++ STL / pegasus-g++ | bundled when cross-built |
 | Rust target JSON | included |
 | Stable ABI | **not frozen** |
